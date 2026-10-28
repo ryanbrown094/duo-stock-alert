@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { buildPushPayload } from "@block65/webcrypto-web-push";
-import { BUY_URL, PART_NAMES, WATCH_NAMES, buildUrl, decide, summarise, summariseNearby } from "./logic.js";
+import { APPLE_HEADERS, BUY_URL, PART_NAMES, WATCH_NAMES, buildUrl, decide, summarise, summariseNearby } from "./logic.js";
 
 const FAILURES_BEFORE_ALERT = 15;
 const FAILURE_ALERT_GAP_MS = 60 * 60 * 1000;
@@ -9,12 +9,6 @@ const FAILURE_ALERT_GAP_MS = 60 * 60 * 1000;
 const BLOCKED_STATUSES = [403, 429, 541];
 const BLOCK_PAUSE_MS = 15 * 60 * 1000;
 const MAX_BLOCK_PAUSE_MS = 60 * 60 * 1000;
-const APPLE_HEADERS = {
-  Accept: "application/json",
-  "Accept-Language": "en-GB,en;q=0.9",
-  Referer: BUY_URL,
-  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-};
 
 export default {
   async scheduled(_event, env) {
@@ -52,6 +46,11 @@ export default {
         const r = await m.pushOne(sub, { title: "Duo Stock Alert: test", body: "Notifications are working on this device.", url: BUY_URL, tag: "test" });
         return r.ok ? new Response("sent\n") : new Response(`push failed: ${r.status} ${r.detail}\n`, { status: 502 });
       }
+      case "POST /api/report":
+        if (!env.REPORT_KEY || request.headers.get("Authorization") !== `Bearer ${env.REPORT_KEY.trim()}`) {
+          return new Response("forbidden", { status: 403 });
+        }
+        return Response.json(await m.report(await request.text()));
       case "GET /api/check":
         if (!adminOk(env, url)) return new Response("forbidden", { status: 403 });
         return Response.json(await m.checkOnce());
@@ -82,10 +81,12 @@ function validSubscription(sub) {
 }
 
 export class StockMonitor extends DurableObject {
-  // The cron fires every minute; Apple is asked only every CHECK_EVERY_MINUTES (5 s slack for cron jitter).
+  // The cron fires every minute; Apple is asked only every CHECK_EVERY_MINUTES (5 s slack for cron jitter), and not at
+  // all while the Mac relay is reporting.
   async tick() {
     const state = await this.status();
     const now = Date.now();
+    if (now - (state.lastReport || 0) < 2 * checkEveryMs(this.env)) return { relayed: true };
     if (state.pausedUntil > now) return { paused: true };
     if (now - (state.lastAttempt || 0) < checkEveryMs(this.env) - 5000) return { waiting: true };
     return this.checkOnce();
@@ -108,6 +109,7 @@ export class StockMonitor extends DurableObject {
       lastFailure: s.lastFailure || null,
       pausedUntil: s.pausedUntil || 0,
       checkEveryMinutes: checkEveryMs(this.env) / 60000,
+      via: s.via || null,
     };
   }
 
@@ -142,15 +144,13 @@ export class StockMonitor extends DurableObject {
   }
 
   async checkOnce() {
-    const parts = Object.keys(PART_NAMES);
     const now = Date.now();
     const state = await this.status();
-    state.last ||= {};
     state.lastAttempt = now;
 
     let res, text;
     try {
-      res = await fetch(buildUrl(parts, this.env.LOCATION || "M4 3AQ"), {
+      res = await fetch(buildUrl(Object.keys(PART_NAMES), this.env.LOCATION || "M4 3AQ"), {
         headers: APPLE_HEADERS,
       });
       text = await res.text();
@@ -163,7 +163,21 @@ export class StockMonitor extends DurableObject {
       return this.recordFailure(state, now, `Apple blocked the check (HTTP ${res.status})`);
     }
     if (!res.ok) return this.recordFailure(state, now, `HTTP ${res.status}: ${text.slice(0, 200)}`);
+    return this.ingest(state, now, text, "Cloudflare");
+  }
 
+  // An answer the Mac relay (mac/check.mjs) got from Apple on your home connection.
+  async report(text) {
+    const now = Date.now();
+    const state = await this.status();
+    state.lastReport = now;
+    return this.ingest(state, now, text, "your Mac");
+  }
+
+  // Apple's answer, from either source: refresh what the page shows and alert on changes.
+  async ingest(state, now, text, via) {
+    const parts = Object.keys(PART_NAMES);
+    state.last ||= {};
     let data;
     try {
       data = JSON.parse(text);
@@ -191,6 +205,7 @@ export class StockMonitor extends DurableObject {
     state.lastResults = results;
     state.watched = watched;
     state.storesInResponse = nearby.map((s) => s.storeName);
+    state.via = via;
     await this.ctx.storage.put("state", state);
     return { checkedAt: state.lastCheck, results, storesInResponse: state.storesInResponse };
   }

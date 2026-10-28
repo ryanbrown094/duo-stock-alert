@@ -1,5 +1,12 @@
 export const APPLE_URL = "https://www.apple.com/uk/shop/retail/pickup-message";
 export const BUY_URL = "https://www.apple.com/uk/shop/buy-iphone/iphone-duo";
+// Sent by the Worker and the Mac relay alike: Apple's bot protection rejects requests that don't look like a browser's.
+export const APPLE_HEADERS = {
+  Accept: "application/json",
+  "Accept-Language": "en-GB,en;q=0.9",
+  Referer: BUY_URL,
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+};
 // The two stores watched, matched by name in Apple's answer so nothing depends on knowing their store numbers.
 export const WATCH_NAMES = /trafford|arndale/i;
 

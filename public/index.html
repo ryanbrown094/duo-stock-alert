@@ -184,7 +184,7 @@
   function tick() {
     if (!data?.checkedAt) return ($("checked").textContent = "");
     const ago = Math.max(0, Math.round((Date.now() - new Date(data.checkedAt)) / 1000));
-    $("checked").textContent = `Apple checked ${new Date(data.checkedAt).toLocaleTimeString()} · ${ago < 120 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago · every ${data.checkEveryMinutes} min`;
+    $("checked").textContent = `Apple checked ${new Date(data.checkedAt).toLocaleTimeString()} · ${ago < 120 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago · every ${data.checkEveryMinutes} min${data.via ? ` · from ${data.via}` : ""}`;
   }
 
   function beep() {

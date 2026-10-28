@@ -14,6 +14,9 @@ iphonestockchecker.com, running as the `duo-stock-alert` Worker at https://duo-s
   page; on iPhone, add the page to the Home Screen first.
 - Apple blocks addresses that ask too often, answering HTTP 541: checking once a minute from Cloudflare held for about
   90 minutes. After a 541 (or 403/429) the monitor pauses 15 minutes, doubling for each block in a row up to an hour.
+- `mac/check.mjs`: optional relay for when Apple blocks Cloudflare. It asks Apple from your home connection every
+  3 minutes and posts the answer to `POST /api/report`. While its reports arrive, the Worker skips its own checks; when
+  they stop (Mac asleep, or blocked and backing off), the Worker goes back to checking from Cloudflare.
 
 ## Deploy
 
@@ -27,3 +30,17 @@ Vars (`LOCATION`, `REALERT_MINUTES`, `NTFY_TOPIC`, …), the cron trigger and se
 whatever is live (`keep_vars = true`, no `[triggers]` table).
 
 `PARTS`, `STORES` and `CHECKS_PER_MINUTE` are no longer read: the parts are in `src/logic.js` and the stores are matched by name.
+
+## Mac relay
+
+Once, from the repo folder (needs Node 18+), to create the shared key and give it to the Worker:
+
+```sh
+openssl rand -hex 16 > mac/.report-key && npx wrangler secret put REPORT_KEY < mac/.report-key
+```
+
+Then leave this running in a Terminal window, with the Mac plugged in:
+
+```sh
+caffeinate -is node mac/check.mjs
+```
