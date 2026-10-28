@@ -52,7 +52,7 @@
 <body>
 <main>
   <h1>iPhone Duo stock</h1>
-  <p class="sub">In-store pickup at Apple Trafford Centre and Manchester Arndale, checked with Apple once a minute.</p>
+  <p class="sub">In-store pickup at Apple Trafford Centre and Manchester Arndale, checked with Apple every few minutes.</p>
 
   <div class="chips" id="storage" aria-label="Storage"></div>
   <div class="chips" id="colour" aria-label="Colour"></div>
@@ -84,9 +84,8 @@
   <footer>Straight from Apple's UK pickup availability. Not affiliated with Apple.</footer>
 </main>
 <script>
-  // The monitor asks Apple once a minute; this page only reads its latest answer, so it can poll freely.
+  // The monitor asks Apple every few minutes; this page only reads its latest answer, so it can poll freely.
   const POLL_S = 20;
-  const STALE_MS = 3 * 60 * 1000;
   const TITLE = document.title;
   const STORAGES = ["All", "256GB", "512GB", "1TB", "2TB"];
   const COLOURS = ["All", "Star White", "Night Sky"];
@@ -146,7 +145,7 @@
     else if (failing) notes.push(`Last check failed: ${data.lastFailure?.reason || "unknown error"}`);
     const unknown = !data.checkedAt ? null
       : failing ? `Apple isn't answering. The table is its last answer, from ${clock(data.checkedAt)}.`
-      : Date.now() - new Date(data.checkedAt) > STALE_MS ? `The monitor hasn't checked since ${clock(data.checkedAt)}, so it may have stopped.`
+      : Date.now() - new Date(data.checkedAt) > (data.checkEveryMinutes * 2 + 2) * 60000 ? `The monitor hasn't checked since ${clock(data.checkedAt)}, so it may have stopped.`
       : !data.stores.length ? `Apple's answer didn't include Trafford Centre or Arndale. It listed: ${data.storesInResponse.join(", ") || "no stores"}.`
       : null;
 
@@ -185,7 +184,7 @@
   function tick() {
     if (!data?.checkedAt) return ($("checked").textContent = "");
     const ago = Math.max(0, Math.round((Date.now() - new Date(data.checkedAt)) / 1000));
-    $("checked").textContent = `Apple checked ${new Date(data.checkedAt).toLocaleTimeString()} · ${ago < 120 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago`;
+    $("checked").textContent = `Apple checked ${new Date(data.checkedAt).toLocaleTimeString()} · ${ago < 120 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago · every ${data.checkEveryMinutes} min`;
   }
 
   function beep() {

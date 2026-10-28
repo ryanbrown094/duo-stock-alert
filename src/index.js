@@ -4,9 +4,11 @@ import { BUY_URL, PART_NAMES, WATCH_NAMES, buildUrl, decide, summarise, summaris
 
 const FAILURES_BEFORE_ALERT = 15;
 const FAILURE_ALERT_GAP_MS = 60 * 60 * 1000;
-// Apple's bot protection answers 541 (or 403/429) when it blocks an address; asking again soon only prolongs it.
+// Apple's bot protection answers 541 (or 403/429) when an address asks too often: once a minute from Cloudflare lasted
+// about 90 minutes before a block. Each block in a row doubles the pause, from 15 minutes up to an hour.
 const BLOCKED_STATUSES = [403, 429, 541];
-const BLOCK_PAUSE_MS = 10 * 60 * 1000;
+const BLOCK_PAUSE_MS = 15 * 60 * 1000;
+const MAX_BLOCK_PAUSE_MS = 60 * 60 * 1000;
 const APPLE_HEADERS = {
   Accept: "application/json",
   "Accept-Language": "en-GB,en;q=0.9",
@@ -67,6 +69,10 @@ function monitor(env) {
   return env.MONITOR.get(env.MONITOR.idFromName("singleton"));
 }
 
+function checkEveryMs(env) {
+  return Math.max(1, Number(env.CHECK_EVERY_MINUTES) || 3) * 60 * 1000;
+}
+
 function adminOk(env, url) {
   return !!env.ADMIN_KEY && url.searchParams.get("key") === env.ADMIN_KEY;
 }
@@ -76,10 +82,12 @@ function validSubscription(sub) {
 }
 
 export class StockMonitor extends DurableObject {
-  // One Apple request per cron run (once a minute): faster gets an address blocked for most of an hour.
+  // The cron fires every minute; Apple is asked only every CHECK_EVERY_MINUTES (5 s slack for cron jitter).
   async tick() {
     const state = await this.status();
-    if (state.pausedUntil > Date.now()) return { paused: true };
+    const now = Date.now();
+    if (state.pausedUntil > now) return { paused: true };
+    if (now - (state.lastAttempt || 0) < checkEveryMs(this.env) - 5000) return { waiting: true };
     return this.checkOnce();
   }
 
@@ -99,6 +107,7 @@ export class StockMonitor extends DurableObject {
       failures: s.failures || 0,
       lastFailure: s.lastFailure || null,
       pausedUntil: s.pausedUntil || 0,
+      checkEveryMinutes: checkEveryMs(this.env) / 60000,
     };
   }
 
@@ -137,6 +146,7 @@ export class StockMonitor extends DurableObject {
     const now = Date.now();
     const state = await this.status();
     state.last ||= {};
+    state.lastAttempt = now;
 
     let res, text;
     try {
@@ -148,7 +158,8 @@ export class StockMonitor extends DurableObject {
       return this.recordFailure(state, now, `fetch error: ${e.message}`);
     }
     if (BLOCKED_STATUSES.includes(res.status)) {
-      state.pausedUntil = now + BLOCK_PAUSE_MS;
+      state.blocks = (state.blocks || 0) + 1;
+      state.pausedUntil = now + Math.min(BLOCK_PAUSE_MS * 2 ** (state.blocks - 1), MAX_BLOCK_PAUSE_MS);
       return this.recordFailure(state, now, `Apple blocked the check (HTTP ${res.status})`);
     }
     if (!res.ok) return this.recordFailure(state, now, `HTTP ${res.status}: ${text.slice(0, 200)}`);
@@ -174,6 +185,7 @@ export class StockMonitor extends DurableObject {
     }
 
     state.failures = 0;
+    state.blocks = 0;
     state.pausedUntil = 0;
     state.lastCheck = new Date(now).toISOString();
     state.lastResults = results;
