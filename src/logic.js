@@ -57,6 +57,28 @@ export function summarise(data, parts, stores) {
   return { results, storesInResponse: all.map((s) => s.storeNumber) };
 }
 
+// Every store Apple returns near the searched location, with each requested part's pickup status.
+export function summariseNearby(data, parts) {
+  const all = data?.body?.content?.pickupMessage?.stores ?? [];
+  return all.map((s) => ({
+    store: s.storeNumber,
+    storeName: s.storeName || s.storeNumber,
+    parts: Object.fromEntries(
+      parts.map((p) => {
+        const pa = s.partsAvailability?.[p];
+        if (!pa) return [p, null];
+        const quote =
+          pa.pickupSearchQuote || pa.messageTypes?.regular?.storePickupQuote || pa.messageTypes?.compact?.storePickupQuote || "";
+        return [p, { available: pa.pickupDisplay === "available", quote: stripTags(quote) }];
+      })
+    ),
+  }));
+}
+
+function stripTags(s) {
+  return String(s).replace(/<br\s*\/?>/gi, " ").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+}
+
 export function decide(prev, r, now, realertMs) {
   if (r.available) {
     const fresh = !prev || !prev.available;

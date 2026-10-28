@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Duo Stock</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e8;
+    --yes: #0a7d32; --on-yes: #fff; --yes-bg: #e3f6e9; --no: #8e8e93; --warn: #8a5a00; --warn-bg: #fff4d6; --accent: #0066cc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #a1a1a6; --line: #2c2c2e;
+      --yes: #4cd47a; --on-yes: #04210f; --yes-bg: #0f2e1a; --no: #8e8e93; --warn: #ffcc66; --warn-bg: #2e2410; --accent: #2997ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 17px; margin: 0 0 4px; }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin: 4px 0 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chips button[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .banner { border-radius: 14px; padding: 14px 16px; margin: 12px 0; background: var(--card); border: 1px solid var(--line); }
+  .banner.yes { background: var(--yes-bg); border-color: var(--yes); }
+  .banner strong { display: block; font-size: 17px; }
+  .banner ul { margin: 6px 0 10px; padding-left: 18px; }
+  .buy { display: inline-block; background: var(--yes); color: var(--on-yes); text-decoration: none; font-weight: 600; padding: 8px 14px; border-radius: 999px; }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { padding: 10px 8px; text-align: left; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  tbody th { font-weight: 500; }
+  .pill { display: inline-block; font-size: 13px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .pill.yes { background: var(--yes); color: var(--on-yes); }
+  .pill.no { color: var(--no); font-weight: 400; padding-left: 0; }
+  .quote { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
+  .bar div { display: flex; gap: 6px; }
+  button { font: inherit; font-size: 14px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #sound[aria-pressed="true"] { border-color: var(--yes); color: var(--yes); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-top: 20px; }
+  .card p { margin: 0 0 10px; color: var(--muted); font-size: 14px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>iPhone Duo stock</h1>
+  <p class="sub">In-store pickup at Apple Trafford Centre and Manchester Arndale, checked live with Apple.</p>
+
+  <div class="chips" id="storage" aria-label="Storage"></div>
+  <div class="chips" id="colour" aria-label="Colour"></div>
+
+  <div id="banner" class="banner" aria-live="polite"><strong>Checking Apple…</strong></div>
+  <div id="warnings"></div>
+
+  <div class="bar">
+    <span id="checked"></span>
+    <div>
+      <button id="sound" type="button" aria-pressed="false">Sound: off</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr id="head"><th>Model</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <section class="card">
+    <h2>Phone alerts</h2>
+    <p>Get a notification the moment stock appears, even with this page closed. The monitor checks about every 20 seconds.
+      On iPhone, add this page to your Home Screen first (Share → Add to Home Screen) and open it from there.</p>
+    <div class="chips">
+      <button id="push" type="button">Turn on alerts</button>
+      <button id="test" type="button" hidden>Send test</button>
+    </div>
+    <p id="pushStatus" aria-live="polite"></p>
+  </section>
+
+  <footer>Straight from Apple's UK pickup availability. Not affiliated with Apple.</footer>
+</main>
+<script>
+  const REFRESH_S = 30;
+  const STORE_MATCH = /trafford|arndale/i;
+  const TITLE = document.title;
+  const STORAGES = ["All", "256GB", "512GB", "1TB", "2TB"];
+  const COLOURS = ["All", "Star White", "Night Sky"];
+
+  let filter = { storage: "All", colour: "All" };
+  try { filter = { ...filter, ...JSON.parse(localStorage.getItem("filter")) }; } catch {}
+  let data = null, error = null, nextAt = 0, inStock = new Set(), audio = null, loading = false;
+
+  const $ = (id) => document.getElementById(id);
+  function el(tag, attrs = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) k === "class" ? (n.className = v) : n.setAttribute(k, v);
+    for (const k of kids) n.append(k);
+    return n;
+  }
+  const shortName = (s) => s.replace(/^iPhone Duo\s*/, "");
+
+  function chips(id, key, values) {
+    $(id).replaceChildren(...values.map((v) => {
+      const b = el("button", { type: "button", "aria-pressed": String(filter[key] === v) }, v);
+      b.onclick = () => {
+        filter[key] = v;
+        try { localStorage.setItem("filter", JSON.stringify(filter)); } catch {}
+        chips(id, key, values);
+        render();
+      };
+      return b;
+    }));
+  }
+
+  async function load() {
+    if (loading) return;
+    loading = true;
+    $("refresh").disabled = true;
+    try {
+      const res = await fetch("/api/stock", { cache: "no-store" });
+      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`);
+      data = body;
+      error = null;
+    } catch (e) {
+      error = `Last check failed: ${e.message}`;
+    } finally {
+      loading = false;
+      $("refresh").disabled = false;
+      nextAt = Date.now() + REFRESH_S * 1000;
+      render();
+    }
+  }
+
+  function render() {
+    tick();
+    const notes = error ? [error] : [];
+    $("warnings").replaceChildren(...notes.map((n) => el("div", { class: "warn" }, n)));
+    if (!data) {
+      if (error) $("banner").replaceChildren(el("strong", {}, "Couldn't get stock from Apple"));
+      return;
+    }
+    const wanted = data.parts.filter((p) =>
+      (filter.storage === "All" || p.name.includes(` ${filter.storage} `)) && (filter.colour === "All" || p.name.endsWith(filter.colour)));
+    let stores = data.stores.filter((s) => STORE_MATCH.test(s.storeName));
+    if (!stores.length) {
+      stores = data.stores;
+      notes.push(`Apple didn't list Trafford Centre or Arndale this time, so showing every nearby store (${stores.length}).`);
+    }
+
+    $("head").replaceChildren(el("th", {}, "Model"), ...stores.map((s) => el("th", {}, s.storeName)));
+    $("rows").replaceChildren(...wanted.map((p) =>
+      el("tr", {}, el("th", { scope: "row" }, shortName(p.name)), ...stores.map((s) => {
+        const a = s.parts[p.part];
+        if (!a) return el("td", {}, el("span", { class: "pill no" }, "No data"));
+        if (!a.available) return el("td", {}, el("span", { class: "pill no" }, a.quote || "Unavailable"));
+        return el("td", {}, el("span", { class: "pill yes" }, "In stock"), el("span", { class: "quote" }, a.quote));
+      }))));
+
+    const avail = [];
+    for (const s of stores) for (const p of wanted) if (s.parts[p.part]?.available) avail.push({ key: `${s.store}:${p.part}`, text: `${shortName(p.name)} at ${s.storeName}` });
+    const now = new Set(avail.map((a) => a.key));
+    const fresh = avail.some((a) => !inStock.has(a.key));
+    inStock = now;
+
+    const banner = $("banner");
+    if (avail.length) {
+      banner.className = "banner yes";
+      banner.replaceChildren(el("strong", {}, "In stock now"), el("ul", {}, ...avail.map((a) => el("li", {}, a.text))),
+        el("a", { class: "buy", href: data.buyUrl, target: "_blank", rel: "noopener" }, "Buy on apple.com"));
+      document.title = `(${avail.length}) In stock! · ${TITLE}`;
+      if (fresh) beep();
+    } else {
+      banner.className = "banner";
+      banner.replaceChildren(el("strong", {}, "Nothing in stock right now"));
+      document.title = TITLE;
+    }
+    $("warnings").replaceChildren(...notes.map((n) => el("div", { class: "warn" }, n)));
+  }
+
+  function tick() {
+    const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
+    const at = data ? `Checked ${new Date(data.checkedAt).toLocaleTimeString()}` : "Not checked yet";
+    $("checked").textContent = loading ? "Checking…" : `${at} · next in ${left}s`;
+    if (!loading && nextAt && left === 0 && !document.hidden) load();
+  }
+
+  function beep() {
+    if (!audio) return;
+    const t = audio.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.25, t + i * 0.3);
+      g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.3 + 0.2);
+      o.connect(g).connect(audio.destination);
+      o.start(t + i * 0.3);
+      o.stop(t + i * 0.3 + 0.2);
+    }
+  }
+
+  $("sound").onclick = (e) => {
+    const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    if (on) { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); beep(); }
+    else { audio?.close(); audio = null; }
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    e.currentTarget.textContent = `Sound: ${on ? "on" : "off"}`;
+  };
+  $("refresh").onclick = load;
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() >= nextAt) load(); });
+
+  // Phone alerts: web push through the monitor's /api/vapid, /api/subscribe, /api/test and /api/unsubscribe.
+  const pushStatus = (msg) => { $("pushStatus").textContent = msg; };
+  function keyBytes(b64url) {
+    const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (b64url.length % 4)) % 4);
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  }
+  async function currentSub() {
+    const reg = await navigator.serviceWorker.getRegistration("/");
+    return reg && reg.pushManager.getSubscription();
+  }
+  function showPush(sub) {
+    $("push").textContent = sub ? "Turn off alerts" : "Turn on alerts";
+    $("test").hidden = !sub;
+    pushStatus(sub ? "Alerts are on for this device." : "");
+  }
+  async function post(path, body) {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+  }
+  async function togglePush() {
+    $("push").disabled = true;
+    try {
+      const existing = await currentSub();
+      if (existing) {
+        await post("/api/unsubscribe", { endpoint: existing.endpoint });
+        await existing.unsubscribe();
+        return showPush(null);
+      }
+      const { publicKey } = await (await fetch("/api/vapid")).json();
+      if (!publicKey) throw new Error("push isn't set up on the server (no VAPID key)");
+      if ((await Notification.requestPermission()) !== "granted") throw new Error("notifications were not allowed");
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+      await post("/api/subscribe", sub.toJSON());
+      showPush(sub);
+    } catch (e) {
+      pushStatus(`Couldn't change alerts: ${e.message}`);
+    } finally {
+      $("push").disabled = false;
+    }
+  }
+  $("push").onclick = togglePush;
+  $("test").onclick = async () => {
+    try { await post("/api/test", (await currentSub()).toJSON()); pushStatus("Test sent. It should arrive in a few seconds."); }
+    catch (e) { pushStatus(`Test failed: ${e.message}`); }
+  };
+  if ("serviceWorker" in navigator && "PushManager" in window) currentSub().then(showPush, () => {});
+  else { $("push").disabled = true; pushStatus("This browser can't do push alerts here. On iPhone, open it from your Home Screen."); }
+
+  chips("storage", "storage", STORAGES);
+  chips("colour", "colour", COLOURS);
+  setInterval(tick, 1000);
+  load();
+</script>
+</body>
+</html>

@@ -1,9 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { buildPushPayload } from "@block65/webcrypto-web-push";
-import { BUY_URL, buildUrl, decide, list, summarise } from "./logic.js";
+import { BUY_URL, PART_NAMES, buildUrl, decide, list, summarise, summariseNearby } from "./logic.js";
 
 const FAILURES_BEFORE_ALERT = 15;
 const FAILURE_ALERT_GAP_MS = 60 * 60 * 1000;
+const APPLE_HEADERS = { Accept: "application/json", "User-Agent": "duo-stock-alert/1.0 (personal pickup-availability monitor)" };
+const STOCK_CACHE_MS = 20 * 1000;
+let stockCache = null;
 
 export default {
   async scheduled(_event, env) {
@@ -18,6 +21,8 @@ export default {
     switch (`${request.method} ${url.pathname}`) {
       case "GET /api/status":
         return Response.json(await m.publicStatus());
+      case "GET /api/stock":
+        return stock(env);
       case "GET /api/vapid":
         return Response.json({ publicKey: env.VAPID_PUBLIC_KEY || null });
       case "POST /api/subscribe": {
@@ -54,6 +59,35 @@ export default {
 
 function monitor(env) {
   return env.MONITOR.get(env.MONITOR.idFromName("singleton"));
+}
+
+// Live check of every Duo part near LOCATION for the stock page. Callers within STOCK_CACHE_MS share one Apple request,
+// so open tabs refreshing can't hammer Apple. Apple's own error is passed through so the page can show it.
+async function stock(env) {
+  if (stockCache && Date.now() - stockCache.at < STOCK_CACHE_MS) return Response.json(stockCache.body);
+  const parts = Object.keys(PART_NAMES);
+  let res, text;
+  try {
+    res = await fetch(buildUrl(parts, env.LOCATION || "M4 3AQ"), { headers: APPLE_HEADERS });
+    text = await res.text();
+  } catch (e) {
+    return Response.json({ error: `Couldn't reach Apple: ${e.message}` }, { status: 502 });
+  }
+  if (!res.ok) return Response.json({ error: `Apple answered HTTP ${res.status}: ${text.slice(0, 120)}` }, { status: 502 });
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return Response.json({ error: `Apple sent a non-JSON response: ${text.slice(0, 120)}` }, { status: 502 });
+  }
+  const body = {
+    checkedAt: new Date().toISOString(),
+    buyUrl: BUY_URL,
+    parts: parts.map((p) => ({ part: p, name: PART_NAMES[p] })),
+    stores: summariseNearby(data, parts),
+  };
+  stockCache = { at: Date.now(), body };
+  return Response.json(body);
 }
 
 function adminOk(env, url) {
@@ -120,7 +154,7 @@ export class StockMonitor extends DurableObject {
     let res, text;
     try {
       res = await fetch(buildUrl(parts, this.env.LOCATION || "M4 3AQ"), {
-        headers: { Accept: "application/json", "User-Agent": "duo-stock-alert/1.0 (personal pickup-availability monitor)" },
+        headers: APPLE_HEADERS,
       });
       text = await res.text();
     } catch (e) {
