@@ -41,7 +41,6 @@
   .pill.no { color: var(--no); font-weight: 400; padding-left: 0; }
   .quote { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
   .bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
-  .bar div { display: flex; gap: 6px; }
   button { font: inherit; font-size: 14px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   #sound[aria-pressed="true"] { border-color: var(--yes); color: var(--yes); }
@@ -53,20 +52,17 @@
 <body>
 <main>
   <h1>iPhone Duo stock</h1>
-  <p class="sub">In-store pickup at Apple Trafford Centre and Manchester Arndale, checked live with Apple.</p>
+  <p class="sub">In-store pickup at Apple Trafford Centre and Manchester Arndale, checked with Apple once a minute.</p>
 
   <div class="chips" id="storage" aria-label="Storage"></div>
   <div class="chips" id="colour" aria-label="Colour"></div>
 
-  <div id="banner" class="banner" aria-live="polite"><strong>Checking Apple…</strong></div>
+  <div id="banner" class="banner" aria-live="polite"><strong>Loading…</strong></div>
   <div id="warnings"></div>
 
   <div class="bar">
     <span id="checked"></span>
-    <div>
-      <button id="sound" type="button" aria-pressed="false">Sound: off</button>
-      <button id="refresh" type="button">Refresh</button>
-    </div>
+    <button id="sound" type="button" aria-pressed="false">Sound: off</button>
   </div>
 
   <table>
@@ -76,7 +72,7 @@
 
   <section class="card">
     <h2>Phone alerts</h2>
-    <p>Get a notification the moment stock appears, even with this page closed. The monitor checks about every 20 seconds.
+    <p>Get a notification the moment stock appears, even with this page closed.
       On iPhone, add this page to your Home Screen first (Share → Add to Home Screen) and open it from there.</p>
     <div class="chips">
       <button id="push" type="button">Turn on alerts</button>
@@ -88,15 +84,16 @@
   <footer>Straight from Apple's UK pickup availability. Not affiliated with Apple.</footer>
 </main>
 <script>
-  const REFRESH_S = 30;
-  const STORE_MATCH = /trafford|arndale/i;
+  // The monitor asks Apple once a minute; this page only reads its latest answer, so it can poll freely.
+  const POLL_S = 20;
+  const STALE_MS = 3 * 60 * 1000;
   const TITLE = document.title;
   const STORAGES = ["All", "256GB", "512GB", "1TB", "2TB"];
   const COLOURS = ["All", "Star White", "Night Sky"];
 
   let filter = { storage: "All", colour: "All" };
   try { filter = { ...filter, ...JSON.parse(localStorage.getItem("filter")) }; } catch {}
-  let data = null, error = null, nextAt = 0, inStock = new Set(), audio = null, loading = false;
+  let data = null, error = null, inStock = new Set(), audio = null;
 
   const $ = (id) => document.getElementById(id);
   function el(tag, attrs = {}, ...kids) {
@@ -106,6 +103,7 @@
     return n;
   }
   const shortName = (s) => s.replace(/^iPhone Duo\s*/, "");
+  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   function chips(id, key, values) {
     $(id).replaceChildren(...values.map((v) => {
@@ -121,41 +119,40 @@
   }
 
   async function load() {
-    if (loading) return;
-    loading = true;
-    $("refresh").disabled = true;
     try {
       const res = await fetch("/api/stock", { cache: "no-store" });
-      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-      if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`);
-      data = body;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
       error = null;
     } catch (e) {
-      error = `Last check failed: ${e.message}`;
-    } finally {
-      loading = false;
-      $("refresh").disabled = false;
-      nextAt = Date.now() + REFRESH_S * 1000;
-      render();
+      error = `Can't reach the monitor: ${e.message}`;
     }
+    render();
   }
 
   function render() {
     tick();
     const notes = error ? [error] : [];
-    $("warnings").replaceChildren(...notes.map((n) => el("div", { class: "warn" }, n)));
+    const banner = $("banner");
+    const show = (cls, ...kids) => { banner.className = `banner ${cls}`; banner.replaceChildren(...kids); };
     if (!data) {
-      if (error) $("banner").replaceChildren(el("strong", {}, "Couldn't get stock from Apple"));
-      return;
-    }
-    const wanted = data.parts.filter((p) =>
-      (filter.storage === "All" || p.name.includes(` ${filter.storage} `)) && (filter.colour === "All" || p.name.endsWith(filter.colour)));
-    let stores = data.stores.filter((s) => STORE_MATCH.test(s.storeName));
-    if (!stores.length) {
-      stores = data.stores;
-      notes.push(`Apple didn't list Trafford Centre or Arndale this time, so showing every nearby store (${stores.length}).`);
+      if (error) show("", el("strong", {}, "Can't reach the monitor"));
+      return $("warnings").replaceChildren(...notes.map((n) => el("div", { class: "warn" }, n)));
     }
 
+    // A failed check means stock is unknown, not out of stock.
+    const failing = data.failures > 0;
+    if (data.pausedUntil > Date.now()) notes.push(`Apple blocked the last check, so checks are paused until ${clock(data.pausedUntil)}.`);
+    else if (failing) notes.push(`Last check failed: ${data.lastFailure?.reason || "unknown error"}`);
+    const unknown = !data.checkedAt ? null
+      : failing ? `Apple isn't answering. The table is its last answer, from ${clock(data.checkedAt)}.`
+      : Date.now() - new Date(data.checkedAt) > STALE_MS ? `The monitor hasn't checked since ${clock(data.checkedAt)}, so it may have stopped.`
+      : !data.stores.length ? `Apple's answer didn't include Trafford Centre or Arndale. It listed: ${data.storesInResponse.join(", ") || "no stores"}.`
+      : null;
+
+    const wanted = data.parts.filter((p) =>
+      (filter.storage === "All" || p.name.includes(` ${filter.storage} `)) && (filter.colour === "All" || p.name.endsWith(filter.colour)));
+    const stores = data.stores;
     $("head").replaceChildren(el("th", {}, "Model"), ...stores.map((s) => el("th", {}, s.storeName)));
     $("rows").replaceChildren(...wanted.map((p) =>
       el("tr", {}, el("th", { scope: "row" }, shortName(p.name)), ...stores.map((s) => {
@@ -167,30 +164,28 @@
 
     const avail = [];
     for (const s of stores) for (const p of wanted) if (s.parts[p.part]?.available) avail.push({ key: `${s.store}:${p.part}`, text: `${shortName(p.name)} at ${s.storeName}` });
-    const now = new Set(avail.map((a) => a.key));
-    const fresh = avail.some((a) => !inStock.has(a.key));
-    inStock = now;
 
-    const banner = $("banner");
-    if (avail.length) {
-      banner.className = "banner yes";
-      banner.replaceChildren(el("strong", {}, "In stock now"), el("ul", {}, ...avail.map((a) => el("li", {}, a.text))),
+    document.title = TITLE;
+    if (!data.checkedAt) {
+      show("", el("strong", {}, failing ? "No answer from Apple yet" : "Waiting for the first check with Apple…"));
+    } else if (unknown) {
+      show("", el("strong", {}, "Stock unknown"), unknown);
+    } else if (avail.length) {
+      show("yes", el("strong", {}, "In stock now"), el("ul", {}, ...avail.map((a) => el("li", {}, a.text))),
         el("a", { class: "buy", href: data.buyUrl, target: "_blank", rel: "noopener" }, "Buy on apple.com"));
       document.title = `(${avail.length}) In stock! · ${TITLE}`;
-      if (fresh) beep();
+      if (avail.some((a) => !inStock.has(a.key))) beep();
     } else {
-      banner.className = "banner";
-      banner.replaceChildren(el("strong", {}, "Nothing in stock right now"));
-      document.title = TITLE;
+      show("", el("strong", {}, "Nothing in stock right now"));
     }
+    if (!unknown) inStock = new Set(avail.map((a) => a.key));
     $("warnings").replaceChildren(...notes.map((n) => el("div", { class: "warn" }, n)));
   }
 
   function tick() {
-    const left = Math.max(0, Math.ceil((nextAt - Date.now()) / 1000));
-    const at = data ? `Checked ${new Date(data.checkedAt).toLocaleTimeString()}` : "Not checked yet";
-    $("checked").textContent = loading ? "Checking…" : `${at} · next in ${left}s`;
-    if (!loading && nextAt && left === 0 && !document.hidden) load();
+    if (!data?.checkedAt) return ($("checked").textContent = "");
+    const ago = Math.max(0, Math.round((Date.now() - new Date(data.checkedAt)) / 1000));
+    $("checked").textContent = `Apple checked ${new Date(data.checkedAt).toLocaleTimeString()} · ${ago < 120 ? `${ago}s` : `${Math.round(ago / 60)} min`} ago`;
   }
 
   function beep() {
@@ -214,8 +209,7 @@
     e.currentTarget.setAttribute("aria-pressed", String(on));
     e.currentTarget.textContent = `Sound: ${on ? "on" : "off"}`;
   };
-  $("refresh").onclick = load;
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() >= nextAt) load(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 
   // Phone alerts: web push through the monitor's /api/vapid, /api/subscribe, /api/test and /api/unsubscribe.
   const pushStatus = (msg) => { $("pushStatus").textContent = msg; };
@@ -270,6 +264,7 @@
   chips("storage", "storage", STORAGES);
   chips("colour", "colour", COLOURS);
   setInterval(tick, 1000);
+  setInterval(() => { if (!document.hidden) load(); }, POLL_S * 1000);
   load();
 </script>
 </body>

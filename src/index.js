@@ -1,12 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import { buildPushPayload } from "@block65/webcrypto-web-push";
-import { BUY_URL, PART_NAMES, buildUrl, decide, list, summarise, summariseNearby } from "./logic.js";
+import { BUY_URL, PART_NAMES, WATCH_NAMES, buildUrl, decide, summarise, summariseNearby } from "./logic.js";
 
 const FAILURES_BEFORE_ALERT = 15;
 const FAILURE_ALERT_GAP_MS = 60 * 60 * 1000;
-const APPLE_HEADERS = { Accept: "application/json", "User-Agent": "duo-stock-alert/1.0 (personal pickup-availability monitor)" };
-const STOCK_CACHE_MS = 20 * 1000;
-let stockCache = null;
+// Apple's bot protection answers 541 (or 403/429) when it blocks an address; asking again soon only prolongs it.
+const BLOCKED_STATUSES = [403, 429, 541];
+const BLOCK_PAUSE_MS = 10 * 60 * 1000;
+const APPLE_HEADERS = {
+  Accept: "application/json",
+  "Accept-Language": "en-GB,en;q=0.9",
+  Referer: BUY_URL,
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+};
 
 export default {
   async scheduled(_event, env) {
@@ -22,7 +28,7 @@ export default {
       case "GET /api/status":
         return Response.json(await m.publicStatus());
       case "GET /api/stock":
-        return stock(env);
+        return Response.json(await m.stock());
       case "GET /api/vapid":
         return Response.json({ publicKey: env.VAPID_PUBLIC_KEY || null });
       case "POST /api/subscribe": {
@@ -61,35 +67,6 @@ function monitor(env) {
   return env.MONITOR.get(env.MONITOR.idFromName("singleton"));
 }
 
-// Live check of every Duo part near LOCATION for the stock page. Callers within STOCK_CACHE_MS share one Apple request,
-// so open tabs refreshing can't hammer Apple. Apple's own error is passed through so the page can show it.
-async function stock(env) {
-  if (stockCache && Date.now() - stockCache.at < STOCK_CACHE_MS) return Response.json(stockCache.body);
-  const parts = Object.keys(PART_NAMES);
-  let res, text;
-  try {
-    res = await fetch(buildUrl(parts, env.LOCATION || "M4 3AQ"), { headers: APPLE_HEADERS });
-    text = await res.text();
-  } catch (e) {
-    return Response.json({ error: `Couldn't reach Apple: ${e.message}` }, { status: 502 });
-  }
-  if (!res.ok) return Response.json({ error: `Apple answered HTTP ${res.status}: ${text.slice(0, 120)}` }, { status: 502 });
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return Response.json({ error: `Apple sent a non-JSON response: ${text.slice(0, 120)}` }, { status: 502 });
-  }
-  const body = {
-    checkedAt: new Date().toISOString(),
-    buyUrl: BUY_URL,
-    parts: parts.map((p) => ({ part: p, name: PART_NAMES[p] })),
-    stores: summariseNearby(data, parts),
-  };
-  stockCache = { at: Date.now(), body };
-  return Response.json(body);
-}
-
 function adminOk(env, url) {
   return !!env.ADMIN_KEY && url.searchParams.get("key") === env.ADMIN_KEY;
 }
@@ -99,19 +76,30 @@ function validSubscription(sub) {
 }
 
 export class StockMonitor extends DurableObject {
+  // One Apple request per cron run (once a minute): faster gets an address blocked for most of an hour.
   async tick() {
-    const n = Math.max(1, Number(this.env.CHECKS_PER_MINUTE || 3));
-    const gap = Math.floor(60000 / n);
-    const out = [];
-    for (let i = 0; i < n; i++) {
-      if (i) await new Promise((r) => setTimeout(r, gap));
-      out.push(await this.checkOnce());
-    }
-    return out;
+    const state = await this.status();
+    if (state.pausedUntil > Date.now()) return { paused: true };
+    return this.checkOnce();
   }
 
   async status() {
     return (await this.ctx.storage.get("state")) || {};
+  }
+
+  // What the stock page shows: the last good answer for the watched stores, plus why checks are failing, if they are.
+  async stock() {
+    const s = await this.status();
+    return {
+      checkedAt: s.lastCheck || null,
+      buyUrl: BUY_URL,
+      parts: Object.entries(PART_NAMES).map(([part, name]) => ({ part, name })),
+      stores: s.watched || [],
+      storesInResponse: s.storesInResponse || [],
+      failures: s.failures || 0,
+      lastFailure: s.lastFailure || null,
+      pausedUntil: s.pausedUntil || 0,
+    };
   }
 
   async publicStatus() {
@@ -145,8 +133,7 @@ export class StockMonitor extends DurableObject {
   }
 
   async checkOnce() {
-    const parts = list(this.env.PARTS);
-    const stores = list(this.env.STORES);
+    const parts = Object.keys(PART_NAMES);
     const now = Date.now();
     const state = await this.status();
     state.last ||= {};
@@ -160,6 +147,10 @@ export class StockMonitor extends DurableObject {
     } catch (e) {
       return this.recordFailure(state, now, `fetch error: ${e.message}`);
     }
+    if (BLOCKED_STATUSES.includes(res.status)) {
+      state.pausedUntil = now + BLOCK_PAUSE_MS;
+      return this.recordFailure(state, now, `Apple blocked the check (HTTP ${res.status})`);
+    }
     if (!res.ok) return this.recordFailure(state, now, `HTTP ${res.status}: ${text.slice(0, 200)}`);
 
     let data;
@@ -169,7 +160,10 @@ export class StockMonitor extends DurableObject {
       return this.recordFailure(state, now, `non-JSON response: ${text.slice(0, 200)}`);
     }
 
-    const { results, storesInResponse } = summarise(data, parts, stores);
+    const nearby = summariseNearby(data, parts);
+    if (!nearby.length) return this.recordFailure(state, now, `Apple listed no stores: ${text.slice(0, 200)}`);
+    const watched = nearby.filter((s) => WATCH_NAMES.test(s.storeName));
+    const { results } = summarise(data, parts, watched.map((s) => s.store));
     const realertMs = Number(this.env.REALERT_MINUTES || 10) * 60 * 1000;
 
     for (const r of results) {
@@ -180,12 +174,13 @@ export class StockMonitor extends DurableObject {
     }
 
     state.failures = 0;
+    state.pausedUntil = 0;
     state.lastCheck = new Date(now).toISOString();
     state.lastResults = results;
-    state.storesInResponse = storesInResponse;
-    state.missingStores = stores.filter((s) => !storesInResponse.includes(s));
+    state.watched = watched;
+    state.storesInResponse = nearby.map((s) => s.storeName);
     await this.ctx.storage.put("state", state);
-    return { checkedAt: state.lastCheck, results, missingStores: state.missingStores };
+    return { checkedAt: state.lastCheck, results, storesInResponse: state.storesInResponse };
   }
 
   async recordFailure(state, now, reason) {

@@ -1,5 +1,7 @@
-export const APPLE_URL = "https://www.apple.com/uk/shop/fulfillment-messages";
+export const APPLE_URL = "https://www.apple.com/uk/shop/retail/pickup-message";
 export const BUY_URL = "https://www.apple.com/uk/shop/buy-iphone/iphone-duo";
+// The two stores watched, matched by name in Apple's answer so nothing depends on knowing their store numbers.
+export const WATCH_NAMES = /trafford|arndale/i;
 
 export const PART_NAMES = {
   "MK2D4QN/A": "iPhone Duo 256GB Star White",
@@ -23,16 +25,18 @@ export function buildUrl(parts, location) {
   const url = new URL(APPLE_URL);
   url.searchParams.set("pl", "true");
   url.searchParams.set("mts.0", "regular");
-  url.searchParams.set("mts.1", "compact");
-  url.searchParams.set("cppart", "UNLOCKED/GB");
   parts.forEach((p, i) => url.searchParams.set(`parts.${i}`, p));
   url.searchParams.set("location", location);
-  url.searchParams.set("searchNearby", "true");
   return url.toString();
 }
 
+// pickup-message answers with body.stores; the retired fulfillment-messages used body.content.pickupMessage.stores.
+function storesOf(data) {
+  return data?.body?.stores ?? data?.body?.content?.pickupMessage?.stores ?? [];
+}
+
 export function summarise(data, parts, stores) {
-  const all = data?.body?.content?.pickupMessage?.stores ?? [];
+  const all = storesOf(data);
   const results = [];
   for (const s of all) {
     if (!stores.includes(s.storeNumber)) continue;
@@ -59,7 +63,7 @@ export function summarise(data, parts, stores) {
 
 // Every store Apple returns near the searched location, with each requested part's pickup status.
 export function summariseNearby(data, parts) {
-  const all = data?.body?.content?.pickupMessage?.stores ?? [];
+  const all = storesOf(data);
   return all.map((s) => ({
     store: s.storeNumber,
     storeName: s.storeName || s.storeNumber,
