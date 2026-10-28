@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duo Stock</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e8;
+    --yes: #0a7d32; --on-yes: #fff; --yes-bg: #e3f6e9; --no: #8e8e93; --warn: #8a5a00; --warn-bg: #fff4d6; --accent: #0066cc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #a1a1a6; --line: #2c2c2e;
+      --yes: #4cd47a; --on-yes: #04210f; --yes-bg: #0f2e1a; --no: #8e8e93; --warn: #ffcc66; --warn-bg: #2e2410; --accent: #2997ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin: 4px 0 16px; }
+  .banner { border-radius: 14px; padding: 14px 16px; margin-bottom: 12px; background: var(--card); border: 1px solid var(--line); }
+  .banner.yes { background: var(--yes-bg); border-color: var(--yes); }
+  .banner strong { display: block; font-size: 17px; }
+  .banner ul { margin: 6px 0 10px; padding-left: 18px; }
+  .buy { display: inline-block; background: var(--yes); color: var(--on-yes); text-decoration: none; font-weight: 600; padding: 8px 14px; border-radius: 999px; }
+  .warn { background: var(--warn-bg); color: var(--warn); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  th, td { padding: 10px 8px; text-align: left; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th { border-top: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  tbody th { font-weight: 500; }
+  .pill { display: inline-block; font-size: 13px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .pill.yes { background: var(--yes); color: var(--on-yes); }
+  .pill.no { color: var(--no); font-weight: 400; padding-left: 0; }
+  .quote { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 14px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--yes); color: var(--yes); }
+  footer { color: var(--muted); font-size: 13px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>iPhone Duo stock</h1>
+    <a href="/">Phone alerts</a>
+  </header>
+  <p class="sub">In-store pickup at the stores the monitor watches, rechecked about every 20 seconds.</p>
+
+  <div id="banner" class="banner" aria-live="polite"><strong>Loading…</strong></div>
+  <div id="warnings"></div>
+
+  <div class="bar">
+    <span id="checked">Not checked yet</span>
+    <button id="sound" type="button" aria-pressed="false">Sound alert: off</button>
+  </div>
+
+  <table>
+    <thead><tr id="head"><th>Model</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <footer>Straight from Apple's UK pickup availability. Not affiliated with Apple.</footer>
+</main>
+<script>
+  const BUY_URL = "https://www.apple.com/uk/shop/buy-iphone/iphone-duo";
+  const POLL_MS = 15000;
+  const STALE_MS = 3 * 60 * 1000;
+  const TITLE = document.title;
+
+  let lastCheck = null;
+  let inStock = new Set();
+  let audio = null;
+
+  const $ = (id) => document.getElementById(id);
+  function el(tag, attrs = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) k === "class" ? (n.className = v) : n.setAttribute(k, v);
+    for (const k of kids) n.append(k);
+    return n;
+  }
+  const clean = (s) => String(s || "").replace(/<br\s*\/?>/gi, " ").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  const shortName = (s) => s.replace(/^iPhone Duo\s*/, "");
+
+  async function poll() {
+    try {
+      const res = await fetch("/api/status", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      render(await res.json());
+    } catch (e) {
+      $("banner").className = "banner";
+      $("banner").replaceChildren(el("strong", {}, "Can't reach the monitor"), `${e.message}. Retrying…`);
+    }
+  }
+
+  function render(s) {
+    const results = s.lastResults || [];
+    lastCheck = s.lastCheck ? new Date(s.lastCheck) : null;
+
+    const stores = [...new Map(results.map((r) => [r.store, r.storeName])).entries()];
+    const parts = [...new Map(results.map((r) => [r.part, r.name])).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const byKey = new Map(results.map((r) => [`${r.store}:${r.part}`, r]));
+
+    $("head").replaceChildren(el("th", {}, "Model"), ...stores.map(([, name]) => el("th", {}, name)));
+    $("rows").replaceChildren(...parts.map(([part, name]) =>
+      el("tr", {}, el("th", { scope: "row" }, shortName(name)), ...stores.map(([store]) => {
+        const r = byKey.get(`${store}:${part}`);
+        if (!r) return el("td", {}, el("span", { class: "pill no" }, "No data"));
+        if (!r.available) return el("td", {}, el("span", { class: "pill no" }, clean(r.quote) || "Unavailable"));
+        return el("td", {}, el("span", { class: "pill yes" }, "In stock"), el("span", { class: "quote" }, clean(r.quote)));
+      }))));
+
+    const avail = results.filter((r) => r.available);
+    const now = new Set(avail.map((r) => `${r.store}:${r.part}`));
+    const fresh = [...now].some((k) => !inStock.has(k));
+    inStock = now;
+
+    const banner = $("banner");
+    if (avail.length) {
+      banner.className = "banner yes";
+      banner.replaceChildren(
+        el("strong", {}, "In stock now"),
+        el("ul", {}, ...avail.map((r) => el("li", {}, `${shortName(r.name)} at ${r.storeName}`))),
+        el("a", { class: "buy", href: BUY_URL, target: "_blank", rel: "noopener" }, "Buy on apple.com"));
+      document.title = `(${avail.length}) In stock! · ${TITLE}`;
+      if (fresh) beep();
+    } else {
+      banner.className = "banner";
+      banner.replaceChildren(el("strong", {}, results.length ? "Nothing in stock right now" : "No results from the monitor yet"));
+      document.title = TITLE;
+    }
+
+    const warnings = [];
+    if (s.missingStores?.length) warnings.push(`Apple didn't return store ${s.missingStores.join(", ")} on the last check.`);
+    if (s.failures) warnings.push(`Last ${s.failures} check(s) failed: ${s.lastFailure?.reason || "unknown error"}`);
+    $("warnings").replaceChildren(...warnings.map((w) => el("div", { class: "warn" }, w)));
+    tickClock();
+  }
+
+  function tickClock() {
+    if (!lastCheck) return;
+    const ago = Math.max(0, Math.round((Date.now() - lastCheck) / 1000));
+    const stale = Date.now() - lastCheck > STALE_MS;
+    $("checked").textContent = `Checked ${lastCheck.toLocaleTimeString()} · ${ago}s ago${stale ? " (monitor looks stalled)" : ""}`;
+  }
+
+  function beep() {
+    if (!audio) return;
+    const t = audio.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.25, t + i * 0.3);
+      g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.3 + 0.2);
+      o.connect(g).connect(audio.destination);
+      o.start(t + i * 0.3);
+      o.stop(t + i * 0.3 + 0.2);
+    }
+  }
+
+  $("sound").addEventListener("click", (e) => {
+    const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    if (on && !audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    if (on) { audio.resume(); beep(); }
+    else { audio?.close(); audio = null; }
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    e.currentTarget.textContent = `Sound alert: ${on ? "on" : "off"}`;
+  });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+  setInterval(poll, POLL_MS);
+  setInterval(tickClock, 1000);
+  poll();
+</script>
+</body>
+</html>

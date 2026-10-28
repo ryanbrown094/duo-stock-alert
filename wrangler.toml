@@ -1,0 +1,24 @@
+# Deploys over the live duo-stock-alert Worker (https://duo-stock-alert.nbrown-io.workers.dev).
+# Rebuilt from the deployed bundle, so three things are deliberately left to what is already live:
+#   - vars (PARTS, STORES, LOCATION, CHECKS_PER_MINUTE, REALERT_MINUTES, NTFY_TOPIC, ...): keep_vars keeps them
+#   - the cron trigger: no [triggers] table means wrangler leaves the deployed crons in place
+#   - secrets (VAPID_*, PUSHOVER_*, ADMIN_KEY): deploys never touch secrets
+name = "duo-stock-alert"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+account_id = "52f36be1337501d7eb4752e3ca42fac7"
+workers_dev = true
+keep_vars = true
+
+[assets]
+directory = "./public"
+
+[[durable_objects.bindings]]
+name = "MONITOR"
+class_name = "StockMonitor"
+
+# Guessed: must match the tag the live Worker was first deployed with, or wrangler re-applies every migration below.
+# If your original wrangler.toml is around, use its [[migrations]] block instead.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StockMonitor"]

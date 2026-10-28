@@ -1,0 +1,16 @@
+{
+  "name": "duo-stock-alert",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "predeploy": "test -f public/index.html || (echo 'public/index.html is missing: copy your existing page files into public/ first, or this deploy deletes them (see README).' >&2; exit 1)",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@block65/webcrypto-web-push": "2.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.154.0"
+  }
+}
